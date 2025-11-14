@@ -8,7 +8,8 @@ import (
 	"syscall"
 
 	"reaction/internal/entities"
-	"reaction/internal/interfaces"
+	"reaction/internal/gateways"
+	"reaction/internal/handlers"
 	"reaction/internal/usecases"
 
 	"github.com/bwmarrin/discordgo"
@@ -20,15 +21,20 @@ func main() {
 		log.Fatal("設定の読み込みに失敗:", err)
 	}
 
-	// UseCase を作成し、DiscordHandler に渡す
-	transferUseCase := usecases.NewTransferMessageUseCase(cfg)
-	discordHandler := interfaces.NewDiscordHandler(transferUseCase, cfg)
-
 	// Discord Bot 接続
 	dg, err := discordgo.New("Bot " + cfg.DiscordBotToken)
 	if err != nil {
 		log.Fatal("Discordセッションの作成に失敗:", err)
 	}
+
+	// Gateway を作成（外部APIとの橋渡し）
+	discordGateway := gateways.NewDiscordGateway(dg)
+
+	// UseCase を作成
+	transferUseCase := usecases.NewTransferMessageUseCase(cfg)
+
+	// Handler を作成し、UseCase と Gateway を注入
+	discordHandler := handlers.NewDiscordHandler(transferUseCase, discordGateway, cfg)
 
 	dg.AddHandler(discordHandler.HandleReactionAdd)
 	dg.AddHandler(discordHandler.HandleReactionRemove)

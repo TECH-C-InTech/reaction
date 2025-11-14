@@ -5,18 +5,38 @@ import (
 	"sync"
 
 	"reaction/internal/entities"
-
-	"github.com/bwmarrin/discordgo"
 )
 
-// TransferMessageUseCase - メッセージ転送のビジネスロジックを担当する
-type TransferMessageUseCase struct {
-	config             *entities.Config
-	transferMsgMapping map[string]string // 元メッセージID と 転送メッセージID のマッピング
-	mappingMutex       sync.RWMutex      // マッピング操作の排他制御（並行処理を防ぐ）
+// MessageReference - メッセージ参照情報
+type MessageReference struct {
+	GuildID   string
+	ChannelID string
+	MessageID string
 }
 
-// NewTransferMessageUseCase - 新しいTransferMessageUseCaseを作成する
+// Message - メッセージ情報
+type Message struct {
+	GuildID   string
+	ChannelID string
+	ID        string
+	Content   string
+}
+
+// DiscordClient - Discord APIとの通信インターフェース
+type DiscordClient interface {
+	GetMessage(channelID, messageID string) (*Message, error)
+	SendMessageWithReference(channelID string, ref *MessageReference) (string, error)
+	DeleteMessage(channelID, messageID string) error
+}
+
+// TransferMessageUseCase - メッセージ転送のビジネスロジック
+type TransferMessageUseCase struct {
+	config             *entities.Config
+	transferMsgMapping map[string]string
+	mappingMutex       sync.RWMutex
+}
+
+// NewTransferMessageUseCase - 新しいTransferMessageUseCaseを作成
 func NewTransferMessageUseCase(config *entities.Config) *TransferMessageUseCase {
 	return &TransferMessageUseCase{
 		config:             config,
@@ -24,40 +44,36 @@ func NewTransferMessageUseCase(config *entities.Config) *TransferMessageUseCase 
 	}
 }
 
-// TransferMessage - 転送メッセージを作成し、転送メッセージIDを保存
+// TransferMessage - メッセージを転送し、マッピングを保存
 func (uc *TransferMessageUseCase) TransferMessage(
-	session *discordgo.Session,
-	originalMsg *discordgo.Message,
+	client DiscordClient,
+	originalMsg *Message,
 ) error {
-	// WHY: Discord APIのメッセージ転送機能を使用するため、元メッセージへの参照を作成
-	transferRef := originalMsg.Forward()
-
-	transferMsgSend := &discordgo.MessageSend{
-		Reference: transferRef,
+	transferRef := &MessageReference{
+		GuildID:   originalMsg.GuildID,
+		ChannelID: originalMsg.ChannelID,
+		MessageID: originalMsg.ID,
 	}
 
-	// 指定されたチャンネルに転送
-	transferredMsg, err := session.ChannelMessageSendComplex(uc.config.TransferChannelID, transferMsgSend)
+	transferredMsgID, err := client.SendMessageWithReference(uc.config.TransferChannelID, transferRef)
 	if err != nil {
 		log.Printf("メッセージ転送に失敗: %v", err)
 		return err
 	}
 
-	// 転送メッセージIDを保存
 	uc.mappingMutex.Lock()
-	uc.transferMsgMapping[originalMsg.ID] = transferredMsg.ID
+	uc.transferMsgMapping[originalMsg.ID] = transferredMsgID
 	uc.mappingMutex.Unlock()
 
-	log.Printf("メッセージ %s をチャンネル %s に転送しました (転送メッセージID: %s)", originalMsg.ID, uc.config.TransferChannelID, transferredMsg.ID)
+	log.Printf("メッセージ %s をチャンネル %s に転送しました (転送メッセージID: %s)", originalMsg.ID, uc.config.TransferChannelID, transferredMsgID)
 	return nil
 }
 
-// DeleteTransferredMessage - 転送されたメッセージを削除する
+// DeleteTransferredMessage - 転送メッセージを削除
 func (uc *TransferMessageUseCase) DeleteTransferredMessage(
-	session *discordgo.Session,
+	client DiscordClient,
 	originalMsgID string,
 ) error {
-	// マッピングから転送メッセージIDを取得
 	uc.mappingMutex.RLock()
 	transferredMsgID, exists := uc.transferMsgMapping[originalMsgID]
 	uc.mappingMutex.RUnlock()
@@ -67,14 +83,12 @@ func (uc *TransferMessageUseCase) DeleteTransferredMessage(
 		return nil
 	}
 
-	// 転送メッセージを削除
-	err := session.ChannelMessageDelete(uc.config.TransferChannelID, transferredMsgID)
+	err := client.DeleteMessage(uc.config.TransferChannelID, transferredMsgID)
 	if err != nil {
 		log.Printf("転送メッセージの削除に失敗: %v", err)
 		return err
 	}
 
-	// マッピングから削除
 	uc.mappingMutex.Lock()
 	delete(uc.transferMsgMapping, originalMsgID)
 	uc.mappingMutex.Unlock()
@@ -83,12 +97,11 @@ func (uc *TransferMessageUseCase) DeleteTransferredMessage(
 	return nil
 }
 
-// IsTransferredMessage - 指定されたメッセージIDが転送メッセージかどうかを判定する
+// IsTransferredMessage - メッセージが転送先かどうかを判定
 func (uc *TransferMessageUseCase) IsTransferredMessage(msgID string) bool {
 	uc.mappingMutex.RLock()
 	defer uc.mappingMutex.RUnlock()
 
-	// WHY: transferMsgMappingの値として存在する場合、そのメッセージは転送メッセージ
 	for _, transferredMsgID := range uc.transferMsgMapping {
 		if transferredMsgID == msgID {
 			return true

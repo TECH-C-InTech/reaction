@@ -35,6 +35,12 @@ func (h *DiscordHandler) HandleReactionAdd(s *discordgo.Session, r *discordgo.Me
 		return
 	}
 
+	// WHY: 転送メッセージへのリアクションは無視する（転送の連鎖を防ぐ）
+	if h.transferUseCase.IsTransferredMessage(r.MessageID) {
+		log.Printf("メッセージ %s は転送メッセージのため、リアクション追加を無視します", r.MessageID)
+		return
+	}
+
 	originalMsg, err := s.ChannelMessage(r.ChannelID, r.MessageID)
 	if err != nil {
 		log.Printf("メッセージ取得に失敗: %v", err)
@@ -64,6 +70,12 @@ func (h *DiscordHandler) HandleReactionRemove(s *discordgo.Session, r *discordgo
 	}
 
 	if !h.isTriggerReactionEmoji(r.Emoji) {
+		return
+	}
+
+	// WHY: 転送メッセージへのリアクションは無視する（転送の連鎖を防ぐ）
+	if h.transferUseCase.IsTransferredMessage(r.MessageID) {
+		log.Printf("メッセージ %s は転送メッセージのため、リアクション削除を無視します", r.MessageID)
 		return
 	}
 
